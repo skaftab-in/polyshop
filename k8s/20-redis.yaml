@@ -1,0 +1,50 @@
+# Redis here = a CACHE holding view counts. If it's wiped, we lose only
+# the trending numbers, not real business data. So we treat it as DISPOSABLE
+# and use a plain Deployment with NO persistent volume. This is the deliberate
+# contrast with Postgres: same cluster, opposite durability needs.
+#
+# In real prod this would point at ElastiCache instead.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: polyshop
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: polyshop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

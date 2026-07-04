@@ -1,0 +1,19 @@
+# dependencies and build output
+node_modules/
+dist/
+target/
+*.class
+
+# logs and local env
+*.log
+.env
+.env.*
+
+# OS/editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# never commit the built tarball
+*.tar.gz

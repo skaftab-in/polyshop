@@ -1,0 +1,80 @@
+# Postgres = STATEFUL. It holds data we cannot lose, so we use a StatefulSet
+# with a PersistentVolumeClaim. The claim is filled by local-path-provisioner
+# (the system pod you watched come up green), giving the pod durable storage
+# that survives restarts. This is the "pet, not cattle" pattern.
+#
+# NOTE: in real prod this whole file would be replaced by pointing at RDS.
+# That swap is the "make it production-correct" step for the EKS version.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: polyshop
+type: Opaque
+stringData:
+  POSTGRES_USER: polyshop
+  POSTGRES_PASSWORD: polyshop
+  POSTGRES_DB: polyshop
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: polyshop
+spec:
+  # Headless service (clusterIP: None) is the standard pairing for a StatefulSet.
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: polyshop
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "polyshop"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  # This template asks the cluster for a durable disk for each pod.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

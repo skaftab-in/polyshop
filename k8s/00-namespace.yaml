@@ -1,0 +1,5 @@
+# A namespace keeps all PolyShop resources grouped and isolated from other work.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: polyshop

@@ -1,0 +1,75 @@
+# Local sanity check. Run everything together with one command BEFORE Kubernetes.
+# If it works here, we know the app itself is fine, so any k8s issue is a k8s issue.
+#
+#   docker compose up --build
+#   open http://localhost:8090
+#
+# Frontend is published on host port 8090 (8080/9000/3000 are taken on your box).
+# The backend services are NOT published to the host: they talk to each other
+# over the internal compose network by service name, exactly like in Kubernetes.
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: polyshop
+      POSTGRES_PASSWORD: polyshop
+      POSTGRES_DB: polyshop
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polyshop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  catalog:
+    build: ./catalog
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: polyshop
+      DB_USER: polyshop
+      DB_PASSWORD: polyshop
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  insights:
+    build: ./insights
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  gateway:
+    build: ./gateway
+    environment:
+      PORT: "3000"
+      CATALOG_URL: http://catalog:8080
+      INSIGHTS_URL: http://insights:8000
+    depends_on:
+      - catalog
+      - insights
+
+  frontend:
+    build: ./frontend
+    environment:
+      GATEWAY_HOST: gateway
+    ports:
+      - "8090:80"
+    depends_on:
+      - gateway
+
+volumes:
+  pgdata:
