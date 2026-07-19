@@ -22,6 +22,49 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", service: "gateway" });
 });
 
+// Ping one service's health endpoint with a short timeout so a dead/deleted
+// pod fails fast instead of hanging the whole /api/health/all request.
+async function pingHealth(name, url, timeoutMs = 2500) {
+  const started = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const r = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    return {
+      service: name,
+      status: r.ok ? "up" : "down",
+      latencyMs: Date.now() - started,
+    };
+  } catch (err) {
+    return {
+      service: name,
+      status: "down",
+      latencyMs: Date.now() - started,
+      error: err.name === "AbortError" ? "timeout" : "unreachable",
+    };
+  }
+}
+
+// --- aggregated status board for the frontend's "system status" section ---
+// Every service is checked in parallel. Delete a k8s Deployment and its
+// entry flips to "down" within one poll cycle.
+app.get("/api/health/all", async (req, res) => {
+  const [catalog, insights] = await Promise.all([
+    pingHealth("catalog", `${CATALOG_URL}/actuator/health`),
+    pingHealth("insights", `${INSIGHTS_URL}/health`),
+  ]);
+
+  res.json({
+    checkedAt: new Date().toISOString(),
+    services: [
+      { service: "gateway", status: "up", latencyMs: 0 },
+      catalog,
+      insights,
+    ],
+  });
+});
+
 // --- list all products (straight passthrough to catalog) ---
 app.get("/api/products", async (req, res) => {
   try {

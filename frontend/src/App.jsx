@@ -3,6 +3,17 @@ import { api } from "./api.js";
 
 const money = (cents) => `$${(cents / 100).toFixed(2)}`;
 
+// Static metadata for services the gateway doesn't report on itself
+// (frontend can't ping its own pod from inside the browser — if this
+// code is running at all, the frontend is up).
+const SERVICE_META = {
+  frontend: { label: "frontend", tech: "React / Nginx" },
+  gateway: { label: "gateway", tech: "Node / Express" },
+  catalog: { label: "catalog", tech: "Java / Spring Boot" },
+  insights: { label: "insights", tech: "Python / FastAPI" },
+};
+const SERVICE_ORDER = ["frontend", "gateway", "catalog", "insights"];
+
 export default function App() {
   const [products, setProducts] = useState([]);
   const [trending, setTrending] = useState([]);
@@ -11,9 +22,34 @@ export default function App() {
   const [cartOpen, setCartOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [statuses, setStatuses] = useState({});
+  const [lastChecked, setLastChecked] = useState(null);
 
   const loadTrending = useCallback(() => {
     api.trending().then((d) => setTrending(d.trending || [])).catch(() => {});
+  }, []);
+
+  // Poll the gateway's aggregated health endpoint so the status board
+  // reflects reality within a few seconds of a pod going away (e.g. you
+  // ran `kubectl delete deployment catalog` to see what breaks).
+  const refreshStatus = useCallback(() => {
+    api
+      .healthAll()
+      .then((d) => {
+        const byService = { frontend: "up" };
+        (d.services || []).forEach((s) => {
+          byService[s.service] = s.status;
+        });
+        setStatuses(byService);
+        setLastChecked(new Date());
+      })
+      .catch(() => {
+        // Can't even reach the gateway itself: gateway is down, and since
+        // catalog/insights are only checked THROUGH the gateway, they're
+        // unknown rather than confirmed up or down.
+        setStatuses({ frontend: "up", gateway: "down" });
+        setLastChecked(new Date());
+      });
   }, []);
 
   useEffect(() => {
@@ -23,7 +59,10 @@ export default function App() {
       .catch(() => setProducts([]))
       .finally(() => setLoading(false));
     loadTrending();
-  }, [loadTrending]);
+    refreshStatus();
+    const id = setInterval(refreshStatus, 5000);
+    return () => clearInterval(id);
+  }, [loadTrending, refreshStatus]);
 
   // Opening a product records a view in insights (via the gateway),
   // so the trending strip reflects real interest. Refresh it after a moment.
@@ -89,6 +128,33 @@ export default function App() {
           A small catalog served by four services in four languages. Browse, and
           watch what's trending update as you look around.
         </p>
+      </section>
+
+      <section className="status-board">
+        <div className="status-head">
+          <span className="status-title">Service status</span>
+          {lastChecked && (
+            <span className="status-time">
+              checked {lastChecked.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+        <div className="status-row">
+          {SERVICE_ORDER.map((key) => {
+            const meta = SERVICE_META[key];
+            const status = statuses[key] || "checking";
+            return (
+              <div key={key} className={`status-card status-${status}`}>
+                <span className="status-dot" />
+                <div className="status-info">
+                  <span className="status-name">{meta.label}</span>
+                  <span className="status-tech">{meta.tech}</span>
+                </div>
+                <span className="status-label">{status}</span>
+              </div>
+            );
+          })}
+        </div>
       </section>
 
       {trending.length > 0 && (

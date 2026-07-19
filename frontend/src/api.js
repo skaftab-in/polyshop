@@ -12,4 +12,5 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items }),
     }).then(j),
+  healthAll: () => fetch("/api/health/all").then(j),
 };
