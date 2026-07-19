@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insights
+  namespace: polyshop
+  labels:
+    app.kubernetes.io/name: insights
+    app.kubernetes.io/part-of: polyshop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: insights
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: insights
+    spec:
+      containers:
+        - name: insights
+          image: skaftab/polyshop-insights:0.1.0
+          ports:
+            - containerPort: 8000     # FastAPI listens here
+          env:
+            - name: REDIS_HOST        # the Redis Service name
+              value: redis
+            - name: REDIS_PORT
+              value: "6379"
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 5    # FastAPI starts fast
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

@@ -1,0 +1,9 @@
+# ConfigMap holds non-secret config. Same idea as Secret, no encoding.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: polyshop
+data:
+  POSTGRES_DB: polyshop     # DB the postgres image creates on first boot
+  POSTGRES_USER: polyshop   # role the image creates on first boot

@@ -1,0 +1,12 @@
+# A Namespace walls off part of the cluster. Own names, own quotas, easy cleanup.
+# Prod habit: every app gets its own, never dump into "default".
+
+apiVersion: v1          # core objects (Namespace, Pod, Service) live in "v1"
+kind: Namespace         # the object type. apiVersion + kind = what you're making
+
+metadata:
+  name: polyshop        # unique across the cluster. Everything else points here
+  labels:               # tags for selecting and grouping later
+    app.kubernetes.io/name: polyshop      # the app's name
+    app.kubernetes.io/part-of: polyshop   # groups all PolyShop services under one label
+    environment: dev                      # custom tag, useful once prod exists too

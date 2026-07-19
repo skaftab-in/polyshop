@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1   # Ingress lives in this group, not core v1
+kind: Ingress
+metadata:
+  name: polyshop
+  namespace: polyshop
+  annotations:
+    # nginx rewrites the path so /api/products reaches gateway as /api/products.
+    # Left here as the common place controller-specific tuning goes.
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx     # which controller handles this. Matches the class installed
+  rules:
+    - http:                   # no host: means match any hostname (fine for local)
+        paths:
+          - path: /api        # requests starting /api
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway     # go to the gateway Service
+                port:
+                  number: 3000
+          - path: /           # everything else
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend    # go to the frontend Service
+                port:
+                  number: 80

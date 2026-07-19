@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service               # stable name so gateway can reach catalog
+metadata:
+  name: catalog             # gateway calls http://catalog:8080, this is that name
+  namespace: polyshop
+spec:
+  selector:
+    app.kubernetes.io/name: catalog   # routes to pods with this label
+  ports:
+    - port: 8080            # port the Service exposes
+      targetPort: 8080      # port on the pod

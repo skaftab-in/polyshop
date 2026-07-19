@@ -1,0 +1,13 @@
+# Headless Service: gives each StatefulSet pod a stable DNS name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: polyshop
+spec:
+  clusterIP: None           # None = headless, DNS returns pod IPs, no LB VIP
+  selector:
+    app.kubernetes.io/name: postgres   # matches the pod label below
+  ports:
+    - port: 5432            # port the Service listens on
+      targetPort: 5432      # port on the pod it forwards to

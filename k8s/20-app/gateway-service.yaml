@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway             # frontend proxies to this name
+  namespace: polyshop
+spec:
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - port: 3000
+      targetPort: 3000

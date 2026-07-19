@@ -1,0 +1,60 @@
+apiVersion: apps/v1         # Deployment lives in apps/v1
+kind: Deployment            # stateless workload, pods are interchangeable
+metadata:
+  name: catalog
+  namespace: polyshop
+  labels:
+    app.kubernetes.io/name: catalog
+    app.kubernetes.io/part-of: polyshop
+spec:
+  replicas: 1               # bump later, or let the HPA in phase 40 do it
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: catalog   # which pods this Deployment owns
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: catalog   # MUST match selector + Service
+    spec:
+      containers:
+        - name: catalog
+          image: skaftab/polyshop-catalog:0.1.0   # the image you just pushed
+          ports:
+            - containerPort: 8080     # Spring Boot listens here
+          env:
+            - name: DB_HOST           # literal: the Postgres Service name
+              value: postgres
+            - name: DB_PORT
+              value: "5432"           # numbers must be quoted strings in env
+            - name: DB_NAME
+              valueFrom:              # pull from the same ConfigMap Postgres used
+                configMapKeyRef:
+                  name: postgres-config
+                  key: POSTGRES_DB    # k8s key name differs from app's DB_NAME, fine
+            - name: DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: postgres-config
+                  key: POSTGRES_USER
+            - name: DB_PASSWORD
+              valueFrom:              # pull the secret, never write it here
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          readinessProbe:             # is the port accepting connections yet
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 20   # Spring Boot is slow to start, give it room
+            periodSeconds: 5
+          livenessProbe:              # restart if it wedges
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi          # JVM likes memory, don't starve it
+            limits:
+              cpu: 500m
+              memory: 512Mi

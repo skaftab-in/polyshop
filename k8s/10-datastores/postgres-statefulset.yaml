@@ -1,0 +1,55 @@
+apiVersion: apps/v1         # StatefulSet lives in apps/v1, not core v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: polyshop
+spec:
+  serviceName: postgres     # MUST match the headless Service name above
+  replicas: 1               # one writer. HA Postgres is a whole other topic
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres   # which pods this set owns
+  template:                 # the pod blueprint, stamped out per replica
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres   # MUST match selector + Service
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          envFrom:          # pull ALL keys from these into env vars
+            - configMapRef:
+                name: postgres-config
+            - secretRef:
+                name: postgres-secret
+          volumeMounts:
+            - name: data                          # matches the claim below
+              mountPath: /var/lib/postgresql/data # where postgres stores data
+              subPath: postgres                   # avoids lost+found init error
+          readinessProbe:   # "can it take traffic yet?" gates the Service
+            exec:
+              command: ["pg_isready", "-U", "polyshop"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:    # "is it wedged?" a fail restarts the container
+            exec:
+              command: ["pg_isready", "-U", "polyshop"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:        # requests = scheduler reserves it, limits = ceiling
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  volumeClaimTemplates:     # per-pod PVC. Deployments cannot do this
+    - metadata:
+        name: data          # ties back to volumeMounts.name above
+      spec:
+        accessModes: ["ReadWriteOnce"]   # one node mounts it read-write
+        resources:
+          requests:
+            storage: 1Gi

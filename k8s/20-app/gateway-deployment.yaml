@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: polyshop
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: polyshop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: skaftab/polyshop-gateway:0.1.0
+          ports:
+            - containerPort: 3000     # Express listens here
+          env:
+            - name: PORT
+              value: "3000"
+            - name: CATALOG_URL       # full URL built from the catalog Service
+              value: http://catalog:8080
+            - name: INSIGHTS_URL
+              value: http://insights:8000
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

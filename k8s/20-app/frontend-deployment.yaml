@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: polyshop
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: polyshop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: skaftab/polyshop-frontend:0.1.0
+          ports:
+            - containerPort: 80       # nginx serves the built site here
+          env:
+            - name: GATEWAY_HOST      # nginx template substitutes this at startup
+              value: gateway
+          readinessProbe:
+            httpGet:                  # nginx always answers GET /, safe to probe it
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
