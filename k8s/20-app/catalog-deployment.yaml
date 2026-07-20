@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: catalog
-          image: skaftab/polyshop-catalog:0.1.0   # the image you just pushed
+          image: skaftab/polyshop-catalog:0.2.0   # adds POST /products
           ports:
             - containerPort: 8080     # Spring Boot listens here
           env:

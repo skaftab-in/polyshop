@@ -30,6 +30,21 @@ public class CatalogController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    // Body shape: { "name": "...", "category": "...", "emoji": "...", "priceCents": 1234, "description": "..." }
+    @PostMapping("/products")
+    public ResponseEntity<?> createProduct(@RequestBody ProductRequest req) {
+        if (req.name() == null || req.name().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "name is required"));
+        }
+        if (req.priceCents() < 0) {
+            return ResponseEntity.badRequest().body(Map.of("error", "priceCents must be positive"));
+        }
+
+        Product product = new Product(req.name(), req.category(), req.emoji(), req.priceCents(), req.description());
+        Product saved = products.save(product);
+        return ResponseEntity.ok(saved);
+    }
+
     // Body shape: { "items": [ { "productId": 1, "quantity": 2 }, ... ] }
     @PostMapping("/orders")
     public ResponseEntity<?> placeOrder(@RequestBody OrderRequest req) {
@@ -70,4 +85,5 @@ public class CatalogController {
     // Java records = compact DTOs for parsing the request body
     public record OrderRequest(List<LineItem> items) {}
     public record LineItem(Long productId, int quantity) {}
+    public record ProductRequest(String name, String category, String emoji, int priceCents, String description) {}
 }

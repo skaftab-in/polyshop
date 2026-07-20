@@ -13,4 +13,10 @@ export const api = {
       body: JSON.stringify({ items }),
     }).then(j),
   healthAll: () => fetch("/api/health/all").then(j),
+  addProduct: (product) =>
+    fetch("/api/products", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(product),
+    }).then(j),
 };

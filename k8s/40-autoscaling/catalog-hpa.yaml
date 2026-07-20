@@ -1,0 +1,24 @@
+apiVersion: autoscaling/v2   # v2 supports multiple metrics + tunable behavior. v1 is CPU-only, older
+kind: HorizontalPodAutoscaler
+metadata:
+  name: catalog
+  namespace: polyshop
+spec:
+  scaleTargetRef:            # WHAT this HPA scales
+    apiVersion: apps/v1
+    kind: Deployment
+    name: catalog            # must match the catalog Deployment name exactly
+  minReplicas: 2             # floor: survive one pod dying, never go to zero
+  maxReplicas: 6             # ceiling: cap cost + protect the cluster
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization      # percentage of the CPU *request*, not a core
+          averageUtilization: 60 # aim to keep avg catalog CPU near 60% of its 100m request
+  behavior:                  # the guardrails, made explicit
+    scaleDown:
+      stabilizationWindowSeconds: 120   # wait 2 min of low load before removing pods
+    scaleUp:
+      stabilizationWindowSeconds: 0     # scale up immediately, no wait

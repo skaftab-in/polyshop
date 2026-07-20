@@ -24,6 +24,23 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [statuses, setStatuses] = useState({});
   const [lastChecked, setLastChecked] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addForm, setAddForm] = useState({
+    name: "",
+    category: "",
+    emoji: "",
+    price: "",
+    description: "",
+  });
+  const [addError, setAddError] = useState(null);
+  const [addBusy, setAddBusy] = useState(false);
+
+  const loadProducts = useCallback(() => {
+    return api
+      .products()
+      .then((d) => setProducts(Array.isArray(d) ? d : []))
+      .catch(() => setProducts([]));
+  }, []);
 
   const loadTrending = useCallback(() => {
     api.trending().then((d) => setTrending(d.trending || [])).catch(() => {});
@@ -53,16 +70,49 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    api
-      .products()
-      .then((d) => setProducts(Array.isArray(d) ? d : []))
-      .catch(() => setProducts([]))
-      .finally(() => setLoading(false));
+    loadProducts().finally(() => setLoading(false));
     loadTrending();
     refreshStatus();
     const id = setInterval(refreshStatus, 5000);
     return () => clearInterval(id);
-  }, [loadTrending, refreshStatus]);
+  }, [loadProducts, loadTrending, refreshStatus]);
+
+  const submitProduct = (e) => {
+    e.preventDefault();
+    const priceCents = Math.round(parseFloat(addForm.price) * 100);
+    if (!addForm.name.trim()) {
+      setAddError("Name is required");
+      return;
+    }
+    if (!Number.isFinite(priceCents) || priceCents < 0) {
+      setAddError("Enter a valid price");
+      return;
+    }
+
+    setAddBusy(true);
+    setAddError(null);
+    api
+      .addProduct({
+        name: addForm.name.trim(),
+        category: addForm.category.trim() || "Misc",
+        emoji: addForm.emoji.trim() || "\u{1F4E6}",
+        priceCents,
+        description: addForm.description.trim(),
+      })
+      .then((res) => {
+        if (res.error) {
+          setAddError(res.error);
+          return;
+        }
+        setToast(`Added ${res.name} to the catalog`);
+        setTimeout(() => setToast(null), 2200);
+        setAddForm({ name: "", category: "", emoji: "", price: "", description: "" });
+        setAddOpen(false);
+        loadProducts();
+      })
+      .catch(() => setAddError("Could not reach catalog"))
+      .finally(() => setAddBusy(false));
+  };
 
   // Opening a product records a view in insights (via the gateway),
   // so the trending strip reflects real interest. Refresh it after a moment.
@@ -115,10 +165,15 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark">◆</span> PolyShop
         </div>
-        <button className="cart-btn" onClick={() => setCartOpen(true)}>
-          Cart
-          {cartCount > 0 && <span className="cart-count">{cartCount}</span>}
-        </button>
+        <div className="nav-actions">
+          <button className="add-product-btn" onClick={() => setAddOpen(true)}>
+            + Add product
+          </button>
+          <button className="cart-btn" onClick={() => setCartOpen(true)}>
+            Cart
+            {cartCount > 0 && <span className="cart-count">{cartCount}</span>}
+          </button>
+        </div>
       </header>
 
       <section className="hero">
@@ -225,6 +280,86 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {addOpen && (
+        <div className="overlay" onClick={() => setAddOpen(false)}>
+          <form
+            className="modal"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={submitProduct}
+          >
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setAddOpen(false)}
+            >
+              ✕
+            </button>
+            <h2>Add a product</h2>
+            <p className="modal-desc">
+              Goes straight into catalog's Postgres table via the gateway.
+            </p>
+
+            <div className="form-row">
+              <label>Name</label>
+              <input
+                value={addForm.name}
+                onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
+                placeholder="Nimbus Notebook"
+              />
+            </div>
+            <div className="form-row two">
+              <div>
+                <label>Category</label>
+                <input
+                  value={addForm.category}
+                  onChange={(e) => setAddForm({ ...addForm, category: e.target.value })}
+                  placeholder="Tech"
+                />
+              </div>
+              <div>
+                <label>Emoji</label>
+                <input
+                  value={addForm.emoji}
+                  onChange={(e) => setAddForm({ ...addForm, emoji: e.target.value })}
+                  placeholder="📓"
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <label>Price (USD)</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={addForm.price}
+                onChange={(e) => setAddForm({ ...addForm, price: e.target.value })}
+                placeholder="24.00"
+              />
+            </div>
+            <div className="form-row">
+              <label>Description</label>
+              <textarea
+                value={addForm.description}
+                onChange={(e) =>
+                  setAddForm({ ...addForm, description: e.target.value })
+                }
+                placeholder="A short description shown in the product modal."
+                rows={2}
+              />
+            </div>
+
+            {addError && <p className="form-error">{addError}</p>}
+
+            <div className="modal-foot">
+              <span />
+              <button className="add primary" type="submit" disabled={addBusy}>
+                {addBusy ? "Adding…" : "Add product"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

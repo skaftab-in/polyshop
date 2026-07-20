@@ -76,6 +76,21 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
+// --- add a new product (passthrough to catalog, which writes to Postgres) ---
+app.post("/api/products", async (req, res) => {
+  try {
+    const r = await fetch(`${CATALOG_URL}/products`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch (err) {
+    res.status(502).json({ error: "catalog service unreachable" });
+  }
+});
+
 // --- one product: fetch from catalog AND record a view in insights ---
 app.get("/api/products/:id", async (req, res) => {
   const { id } = req.params;

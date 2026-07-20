@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: skaftab/polyshop-frontend:0.1.0
+          image: skaftab/polyshop-frontend:0.2.0
           ports:
             - containerPort: 80       # nginx serves the built site here
           env:
