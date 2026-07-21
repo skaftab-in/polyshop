@@ -1,265 +1,320 @@
-# PolyShop on Kubernetes (local vCluster)
+# PolyShop on EKS (AWS Load Balancer Controller)
 
-Deploying the PolyShop polyglot microservices store on a local Kubernetes
-cluster, built in phases so each concept lands before the next one stacks on it.
+Running the same PolyShop app tier on a real EKS cluster. The infrastructure
+(VPC, cluster, node group, OIDC provider, IRSA roles) is built by Terraform in
+`infra/terraform/` (see that directory's own README for the resource-by-resource
+breakdown). This doc covers what happens after Terraform: installing the
+controllers, deploying the app, the problems that showed up on EKS but not
+locally, and how to tear it all down.
 
-This branch targets a **local vCluster** with the **nginx ingress controller**.
-A later branch will swap the controller for the **AWS Load Balancer Controller**
-and run the same app tier on **EKS**. The application manifests barely change
-between the two. Only the ingress plumbing and image registry do.
+The Kubernetes manifests are the same ones from the local vCluster branch. Only
+two things differ on EKS: the Ingress uses ALB annotations instead of nginx, and
+the image tags point at the multi-arch builds. Everything else carries over.
 
 ## Architecture
 
 ```
-Browser
-  |
-  v
-Ingress (nginx)          /      -> frontend (React, nginx)
-                         /api   -> gateway  (Node/Express)
-                                     |
-                     +---------------+---------------+
-                     v                               v
-              catalog (Java/Spring)           insights (FastAPI/Python)
-                     |                               |
-                     v                               v
-                 Postgres                          Redis
+Internet
+   |
+   v
+Application Load Balancer          (public subnets, built by the ALB controller
+   |                                from the Ingress object)
+   |     /      -> frontend (React, nginx)
+   |     /api   -> gateway  (Node/Express)
+   |                  |
+   |      +-----------+-----------+
+   |      v                       v
+   |  catalog (Java/Spring)   insights (FastAPI/Python)
+   |      |                       |
+   |      v                       v
+   |  Postgres                  Redis            (StatefulSets on EBS volumes)
+   |
+   +-- worker nodes run in PRIVATE subnets; the ALB in the public subnets
+       reaches pod IPs directly (target-type: ip, VPC CNI)
 ```
 
-Frontend, gateway, catalog, and insights are **stateless**, so they run as
-Deployments. Postgres and Redis are **stateful**, so they run as StatefulSets
-with their own persistent storage. That single distinction drives almost every
-design choice below, including which things the HPA is allowed to scale.
+The app pods, datastores, and both controllers run on worker nodes in the
+private subnets. The ALB sits in the public subnets and routes inbound traffic
+to pod IPs. Postgres and Redis each get an EBS volume through a PersistentVolumeClaim.
 
-## Services
+## What you need before deploying
 
-| Service  | Language           | Port | Data     | Workload    |
-|----------|--------------------|------|----------|-------------|
-| frontend | React + Vite       | 80   | none     | Deployment  |
-| gateway  | Node + Express     | 3000 | none     | Deployment  |
-| catalog  | Java + Spring Boot | 8080 | Postgres | Deployment  |
-| insights | Python + FastAPI   | 8000 | Redis    | Deployment  |
-| postgres | postgres:16        | 5432 | PVC      | StatefulSet |
-| redis    | redis:7            | 6379 | PVC      | StatefulSet |
-
-## Repository layout
-
-The `k8s/` directory is numbered by apply order. Dependencies flow downward, so
-applying in numeric order resolves them without any extra orchestration.
-
-```
-k8s/
-  00-namespace/
-    namespace.yaml
-  10-datastores/
-    postgres-secret.yaml
-    postgres-configmap.yaml
-    postgres-service.yaml         # headless
-    postgres-statefulset.yaml
-    redis-service.yaml            # headless
-    redis-statefulset.yaml
-  20-app/
-    catalog-deployment.yaml
-    catalog-service.yaml
-    insights-deployment.yaml
-    insights-service.yaml
-    gateway-deployment.yaml
-    gateway-service.yaml
-    frontend-deployment.yaml
-    frontend-service.yaml
-  30-ingress/
-    ingress.yaml
-  40-autoscaling/
-    catalog-hpa.yaml
-    gateway-hpa.yaml
-```
-
-One resource concern per file, grouped by service. This maps to how you operate
-a cluster: apply in order, change one thing, review one thing. It is also the
-shape reviewers expect in a pull request. Once every field here is understood,
-the natural next step is Kustomize, with a `base/` plus `overlays/`, to remove
-the copy-paste between environments. Learn the primitives first.
-
-## Prerequisites
-
-- A local Kubernetes cluster. This guide uses vCluster on Docker.
-- `kubectl` pointed at that cluster.
-- `helm` for installing the ingress controller and metrics-server chart.
-- `docker` and a Docker Hub account for the service images.
-
-### Creating the cluster
-
-LoadBalancer type services need elevated privileges on vCluster. Without them
-the ingress controller sits at `<pending>` for its external IP forever, because
-nothing is provisioning the load balancer.
+- The Terraform infra already applied (cluster `polyshop-eks`, region `us-west-2`).
+- `kubectl`, `aws` CLI, `helm`, and `eksctl` installed and on PATH.
+- kubeconfig pointed at the cluster:
 
 ```bash
-vcluster use driver docker
-sudo vcluster create polyshop
+aws eks update-kubeconfig --name polyshop-eks --region us-west-2
+kubectl get nodes        # expect the worker nodes Ready
 ```
 
-The `sudo` is what enables LoadBalancer support. If you create without it, the
-create log prints a warning that load balancer services are not supported, and
-you either recreate with `sudo` or reach the controller through port-forward
-instead.
-
-## Building the images
-
-Kubernetes pulls images, it never builds them. Build locally, tag with the
-registry path and a real version, push, then reference that path in the
-Deployments. Never use `:latest` in a manifest. A concrete version tells you
-exactly what is running and avoids stale cached images on redeploy.
+- Multi-arch images pushed. EKS nodes are amd64; a Mac builds arm64 by default.
+  Build for both so the same tag runs anywhere:
 
 ```bash
-docker login
-
-docker build -t skaftab/polyshop-catalog:0.1.0  ./catalog
-docker build -t skaftab/polyshop-insights:0.1.0 ./insights
-docker build -t skaftab/polyshop-gateway:0.1.0  ./gateway
-docker build -t skaftab/polyshop-frontend:0.1.0 ./frontend
-
-docker push skaftab/polyshop-catalog:0.1.0
-docker push skaftab/polyshop-insights:0.1.0
-docker push skaftab/polyshop-gateway:0.1.0
-docker push skaftab/polyshop-frontend:0.1.0
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t skaftab/polyshop-catalog:0.2.0 --push ./catalog
+# repeat for gateway:0.2.0, frontend:0.2.0, insights:0.1.0
 ```
 
-Apple Silicon note: `docker build` produces arm64 by default, which is fine for
-a local arm64 cluster. EKS nodes are usually amd64, so for the EKS branch you
-rebuild with `docker buildx build --platform linux/amd64` or the images fail
-there with an exec format error.
-
-## Deploy in phases
+Check an image is multi-arch before trusting it:
 
 ```bash
-# Phase 0: the namespace boundary
-kubectl apply -f k8s/00-namespace/namespace.yaml
-kubectl config set-context --current --namespace=polyshop
-
-# Phase 10: datastores (stateful, must be up before the app tier)
-kubectl apply -f k8s/10-datastores/
-
-# Phase 20: app tier (stateless services)
-kubectl apply -f k8s/20-app/
-
-# check all six pods reach 1/1 Running
-kubectl get pods
+docker buildx imagetools inspect skaftab/polyshop-catalog:0.2.0 | grep Platform
+# want to see both linux/amd64 and linux/arm64
 ```
 
-### Phase 30: ingress
+## Install the controllers
 
-The ingress controller is separate software from the Ingress object. The object
-is just routing rules. The controller is the running pod that reads them and
-accepts traffic. No controller means the Ingress does nothing, with no error.
+Terraform builds the IAM roles but installs no controllers. You install three
+things with Helm and one addon: the AWS Load Balancer Controller, the Cluster
+Autoscaler, metrics-server, and the EBS CSI driver.
+
+### AWS Load Balancer Controller
+
+Uses the IRSA role Terraform made. Values live in `infra/helm/alb-values.yaml`,
+which needs the current cluster's VPC ID. A fresh `terraform apply` makes a new
+VPC, so update this before installing or the controller installs healthy and
+then never builds a load balancer.
 
 ```bash
-helm upgrade --install ingress-nginx ingress-nginx \
-  --repo https://kubernetes.github.io/ingress-nginx \
-  --namespace ingress-nginx --create-namespace
+aws eks describe-cluster --name polyshop-eks --region us-west-2 \
+  --query "cluster.resourcesVpcConfig.vpcId" --output text
+# put that value in infra/helm/alb-values.yaml vpcId
 
-# wait for an EXTERNAL-IP (needs the sudo-created cluster)
-kubectl get svc -n ingress-nginx ingress-nginx-controller -w
-
-kubectl apply -f k8s/30-ingress/
-kubectl get ingress
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system -f infra/helm/alb-values.yaml
 ```
 
-The Ingress does path routing: `/api` goes to the gateway, everything else goes
-to the frontend. Verify against the external IP:
+Check it:
 
 ```bash
-curl http://<EXTERNAL-IP>/api/products   # product JSON, routed to gateway
-# open http://<EXTERNAL-IP> in a browser  # UI, routed to frontend
+kubectl get deployment -n kube-system aws-load-balancer-controller       # want 2/2
+kubectl get sa aws-load-balancer-controller -n kube-system \
+  -o jsonpath="{.metadata.annotations}"                                   # shows the role ARN
 ```
 
-### Phase 40: autoscaling
+### Cluster Autoscaler
 
-The HPA needs metrics-server to read CPU. It is not installed by default, and
-without it the HPA shows `<unknown>` and never scales.
+Uses its own IRSA role. Values in `infra/helm/ca-values.yaml`. The service
+account name in that file must match the role's trust policy, and the image tag
+must match the cluster's Kubernetes version.
+
+```bash
+helm repo add autoscaler https://kubernetes.github.io/autoscaler
+helm repo update
+helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+  -n kube-system -f infra/helm/ca-values.yaml
+```
+
+Check it:
+
+```bash
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler
+kubectl logs -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler --tail=20
+```
+
+### metrics-server
+
+Needed by the HPAs. Not installed by default. On EKS the kubelet certs are
+properly signed, so unlike the local cluster you do NOT add `--kubelet-insecure-tls`.
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-
-# local clusters use self-signed kubelet certs, so skip verification (local only)
-kubectl patch deployment metrics-server -n kube-system --type=json \
-  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
-
-# confirm it serves real numbers BEFORE creating the HPA
-kubectl top pods
-
-kubectl apply -f k8s/40-autoscaling/
-kubectl get hpa
+kubectl get deployment metrics-server -n kube-system     # want 1/1
+kubectl top nodes                                        # want real CPU/memory numbers
 ```
 
-A healthy `get hpa` shows a real percentage in TARGETS, like `12%/60%`. Both
-catalog and gateway jump to 2 replicas because of the `minReplicas: 2` floor.
-`<unknown>/60%` means metrics-server is not delivering yet, so fix that first.
+### EBS CSI driver (needed for the datastores)
 
-## Config parity with docker-compose
+This is the one that has no local equivalent, so it is easy to miss. The local
+vCluster had a built-in storage provisioner. EKS does not, so the Postgres and
+Redis PVCs cannot bind until the EBS CSI driver is installed AND has permission
+to create volumes. Install order matters here, so read the whole section before
+running it.
 
-The Kubernetes env vars mirror `docker-compose.yml` on purpose. Compose is the
-known-good local reference, so matching its variable names avoids pods that
-start green then fail on the first request.
+The driver needs an IAM role. Relying on the node role over IMDS is unreliable
+(the controller flickers between healthy and crashing). Give it a dedicated IRSA
+role instead:
 
-| Service  | Env vars                                            | Source in k8s                     |
-|----------|-----------------------------------------------------|-----------------------------------|
-| catalog  | DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD     | literals + postgres ConfigMap/Secret |
-| insights | REDIS_HOST, REDIS_PORT                              | literals                          |
-| gateway  | PORT, CATALOG_URL, INSIGHTS_URL                     | literals (Service names)          |
-| frontend | GATEWAY_HOST                                        | literal, substituted into nginx   |
+```bash
+eksctl create iamserviceaccount \
+  --cluster polyshop-eks --region us-west-2 \
+  --namespace kube-system --name ebs-csi-controller-sa \
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+  --role-only --role-name polyshop-eks-ebs-csi-role --approve
+```
 
-catalog pulls its DB name, user, and password from the same ConfigMap and Secret
-that Postgres itself uses. One source of truth, no drift, and the password is
-never written in the Deployment file.
+Then install the addon WITH the role attached from the start, so the controller
+pods boot with credentials on the first try:
 
-## Things that bit us, and why they were fine
+```bash
+aws eks create-addon --cluster-name polyshop-eks --region us-west-2 \
+  --addon-name aws-ebs-csi-driver \
+  --service-account-role-arn arn:aws:iam::xxxxxxxxxxxx:role/polyshop-eks-ebs-csi-role
+```
 
-**Redis showed `0/1 Running` at first.** `Running` is the process state,
-`0/1` is readiness. The pod was up but its readiness probe had not passed yet.
-It flipped to `1/1` on its own once the probe cleared. Not a failure, just
-startup timing.
+Check it. The controller runs six containers; wait for 6/6:
 
-**catalog restarted once on a fresh cluster.** On a clean start, catalog and
-Postgres come up together. catalog tried to reach the database before it
-finished initializing, exited, and Kubernetes restarted it a second later once
-Postgres was ready. A single restart at startup is the self-healing behavior
-working. A climbing restart count is a real problem. One restart is not.
+```bash
+kubectl get pods -n kube-system | grep ebs-csi-controller     # want 6/6 Running, stable
+```
 
-**External IP stuck at `<pending>`.** The vCluster was created without `sudo`,
-so LoadBalancer services were disabled. The create log said so explicitly, and
-`kubectl describe svc` showed empty events. Recreating with `sudo` fixed it.
+### Default StorageClass
 
-**`wget` not found in the gateway container.** The gateway image is slim and
-ships no `wget`. Slim and distroless images drop extra binaries to shrink size
-and attack surface. Debug from a fuller image or use `kubectl debug` with an
-ephemeral container.
+The driver still needs a StorageClass telling PVCs how to provision. EKS ships a
+`gp2` class, but it is not marked default and it uses the old in-tree provisioner,
+not the CSI driver. Create a gp3 class backed by the CSI driver and mark it default:
 
-## Probes
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+EOF
 
-Backends use `tcpSocket` probes, which only check the port is listening.
-Frontend uses `httpGet /` because nginx is guaranteed to answer it. When each
-service exposes a real health route (Spring Boot `/actuator/health`, a FastAPI
-health path), upgrading the backends to `httpGet` is a genuine improvement over
-the safe TCP default.
+kubectl get storageclass       # gp3 should show (default)
+```
+
+`WaitForFirstConsumer` delays volume creation until the pod is scheduled, so the
+EBS volume lands in the same availability zone as the pod. Without it you can get
+a volume in one AZ and a pod in another, and the volume never attaches.
+
+## Deploy the app
+
+Confirm you are on the right branch and the right cluster before applying, since
+the local and EKS branches differ and the wrong context would deploy to the wrong
+place.
+
+```bash
+git branch --show-current                # main (the EKS branch)
+kubectl config current-context           # ...cluster/polyshop-eks
+```
+
+Apply in phase order:
+
+```bash
+kubectl apply -f k8s/00-namespace/namespace.yaml
+kubectl apply -f k8s/10-datastores/
+kubectl get pods -n polyshop             # wait for postgres-0 and redis-0 to be 1/1
+kubectl get pvc -n polyshop              # both should be Bound
+
+kubectl apply -f k8s/20-app/
+kubectl get pods -n polyshop -w          # all six 1/1 (catalog slowest)
+
+kubectl apply -f k8s/30-ingress/
+kubectl apply -f k8s/40-autoscaling/
+```
+
+Watch the ALB address appear:
+
+```bash
+kubectl get ingress -n polyshop -w
+```
+
+The ADDRESS column fills in with a name like
+`k8s-polyshop-polyshop-xxxx.us-west-2.elb.amazonaws.com` after a couple of
+minutes. Give it a few minutes more before testing, because the ALB registers
+targets and runs health checks after the address exists. Then:
+
+```bash
+curl http://<ALB-ADDRESS>/api/products   # product JSON, routed to gateway
+# open http://<ALB-ADDRESS> in a browser  # UI, routed to frontend
+```
+
+## Problems that showed up on EKS but not locally
+
+Every one of these came from the platform under the manifests, not the manifests
+themselves. The YAML was correct on both clusters. Local hid this work; EKS makes
+you do it.
+
+**Datastores stuck Pending with unbound PVCs.** No EBS CSI driver was installed.
+The local vCluster had a built-in provisioner, so PVCs bound on their own. On EKS
+there was nothing to create the volume, so the pods could not schedule. Fixed by
+installing the EBS CSI driver.
+
+**EBS controller crash-looped at 1/6.** The driver was installed but had no AWS
+credentials. Its log said `no EC2 IMDS role found`. Attaching the EBS policy to
+the node role only helped intermittently. The reliable fix was a dedicated IRSA
+role for the driver, the same pattern the ALB controller and autoscaler already
+use.
+
+**The addon got stuck in CREATING.** Because the controllers never passed health,
+the addon would not report done and would not accept a role update
+(`ResourceInUseException`). Deleting the addon and recreating it with the role ARN
+on the create broke the deadlock, since the controllers then started with
+credentials immediately.
+
+**PVCs stayed Pending even with the driver healthy.** No default StorageClass, and
+the existing gp2 class pointed at the old in-tree provisioner. Created a default
+gp3 class on the CSI driver. The already-Pending PVCs had been created before the
+class existed and a PVC's class is immutable, so they were deleted and let the
+StatefulSets recreate them against the new default.
+
+**Stale VPC ID in alb-values.yaml.** A fresh cluster gets a new VPC. The values
+file still held the old VPC ID from an earlier run. Caught before install. Left
+unfixed, the ALB controller runs healthy and silently never provisions a load
+balancer.
+
+**Images were arm64 only.** Built on an Apple Silicon Mac, so they would fail on
+amd64 nodes with `exec format error`. Rebuilt multi-arch before deploying, so this
+was prevented rather than hit. The nginx test never exposed it because the public
+nginx image is already multi-arch.
+
+## Health check note
+
+The ALB health-checks every target group. By default it checks `/`. The frontend
+answers `/`, so it passes. If the gateway does not return 200 on `/`, its target
+group shows unhealthy and `/api` returns 503 even though the pod is fine. If that
+happens, add a health check path annotation on the gateway Service pointing at a
+route it actually serves.
 
 ## Teardown
 
+Order matters. Delete the Ingress first so the controller removes the ALB cleanly.
+Destroying Terraform while the ALB still exists can orphan the load balancer and
+leak cost.
+
 ```bash
-kubectl delete namespace polyshop        # removes the whole app in one shot
-helm uninstall ingress-nginx -n ingress-nginx
+kubectl delete -f k8s/30-ingress/                              # ALB removed first
+kubectl delete namespace polyshop                              # app, datastores, PVCs, EBS volumes
+
+helm uninstall aws-load-balancer-controller -n kube-system
+helm uninstall cluster-autoscaler -n kube-system
+aws eks delete-addon --cluster-name polyshop-eks --region us-west-2 \
+  --addon-name aws-ebs-csi-driver
+
+cd infra/terraform && terraform destroy
 ```
 
-Deleting the namespace removes every PolyShop object inside it, including the
-PVCs, so the datastore data is gone too. The ingress controller and
-metrics-server live outside the namespace and are removed separately.
+Deleting the namespace removes the PVCs, which deletes the backing EBS volumes
+(the gp3 class reclaim policy is Delete). Confirm no volumes or load balancers are
+left behind before you consider the account clean:
 
-## Next: the EKS branch
+```bash
+aws elbv2 describe-load-balancers --region us-west-2 \
+  --query "LoadBalancers[?contains(LoadBalancerName,'polyshop')].LoadBalancerName"
+aws ec2 describe-volumes --region us-west-2 \
+  --filters "Name=tag:kubernetes.io/created-for/pvc/namespace,Values=polyshop" \
+  --query "Volumes[].VolumeId"
+```
 
-The application manifests carry over unchanged. What changes:
+## Worth adding to Terraform later
 
-- Images move from Docker Hub to ECR, and nodes authenticate through their IAM
-  role rather than a pull secret.
-- The nginx controller is replaced by the AWS Load Balancer Controller, which
-  provisions a real ALB. The `<pending>` external IP problem disappears.
-- The Ingress gains a `host:` and controller-specific annotations for the ALB.
-- Datastores move out of the cluster to RDS and ElastiCache in real production,
-  leaving only the stateless tier in Kubernetes.
+Two of the manual steps above should live in Terraform so a fresh cluster never
+hits them:
+
+- An IRSA role for the EBS CSI driver, plus the addon installed with that role.
+- The default gp3 StorageClass.
+
+With those in the infra code, the storage problems in this doc disappear on the
+next clean build.

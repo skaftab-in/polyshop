@@ -1,0 +1,20 @@
+# ca-values.yaml
+# Settings for the Cluster Autoscaler (installed with Helm).
+# It adds nodes when pods can't fit, and removes nodes when they sit idle.
+
+autoDiscovery:
+  clusterName: polyshop-eks    # finds the node group by its cluster tag, then scales that group
+
+awsRegion: us-west-2           # which AWS region to make scaling calls in
+
+rbac:
+  serviceAccount:
+    name: cluster-autoscaler   # this name MUST match the trust rule on the CA IAM role (the bug last time)
+    annotations:
+      # the IRSA badge: points the pod at its IAM role so it can call the AWS Auto Scaling API, no stored keys
+      eks.amazonaws.com/role-arn: arn:aws:iam::xxxxxxxxxxxx:role/polyshop-eks-cluster-autoscaler-role
+      # the IRSA badge; get from `terraform output cluster_autoscaler_role_arn`
+      #eks.amazonaws.com/role-arn: <YOUR_CA_ROLE_ARN>
+
+image:
+  tag: v1.33.0                 # pin to a published version matching the cluster's 1.33 (must exist, or ImagePullBackOff)

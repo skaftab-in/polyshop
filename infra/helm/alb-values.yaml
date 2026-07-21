@@ -1,0 +1,17 @@
+# alb-values.yaml
+# Settings for the AWS Load Balancer Controller (installed with Helm).
+# The controller watches for Ingress objects and builds a real ALB for them.
+
+clusterName: polyshop-eks      # which cluster this controller manages
+
+region: us-west-2              # which AWS region the cluster lives in
+
+vpcId: vpc-015ad8c2e54056bde          # the network to build load balancers in (ALB-only need; get from `terraform output`)
+
+serviceAccount:
+  create: true                 # let Helm create the service account (the pod's identity)
+  name: aws-load-balancer-controller   # this name MUST match the trust rule on the ALB IAM role
+  annotations:
+    # the IRSA badge: points the pod at its IAM role so it can call AWS with no stored keys
+    #eks.amazonaws.com/role-arn: <YOUR_ALB_CONTROLLER_ROLE_ARN>   # get from `terraform output alb_controller_role_arn`
+    eks.amazonaws.com/role-arn: arn:aws:iam::xxxxxxxxxxxx:role/polyshop-eks-alb-controller-role

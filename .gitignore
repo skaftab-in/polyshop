@@ -17,3 +17,14 @@ target/
 
 # never commit the built tarball
 *.tar.gz
+
+# Terraform (infra/terraform)
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+infra/terraform/crash.log
+infra/terraform/crash.*.log
+infra/terraform/override.tf
+infra/terraform/override.tf.json
+!infra/terraform/.terraform.lock.hcl
