@@ -37,6 +37,125 @@ The app pods, datastores, and both controllers run on worker nodes in the
 private subnets. The ALB sits in the public subnets and routes inbound traffic
 to pod IPs. Postgres and Redis each get an EBS volume through a PersistentVolumeClaim.
 
+## Provision the infrastructure (Terraform)
+
+The Terraform in `infra/terraform/` is written by hand rather than with a
+prebuilt module, so each resource is visible. It creates the network, the IAM
+roles the cluster and nodes need, the cluster itself, a managed node group, and
+the IRSA roles the AWS Load Balancer Controller and the Cluster Autoscaler need.
+It does not install either controller — that split is on purpose: Terraform
+owns the AWS infrastructure, Helm owns what runs inside the cluster.
+
+```mermaid
+graph TD
+    Internet((Internet))
+
+    subgraph AWS["AWS account, us-west-2"]
+        CP["EKS control plane<br/>k8s 1.33 (eks.tf)"]
+        OIDC["OIDC provider<br/>(oidc.tf)"]
+        ASG["Managed node group ASG<br/>t3.medium, min 1 / desired 2 / max 3<br/>(eks.tf)"]
+
+        subgraph IAM["IAM roles"]
+            CROLE["Cluster role<br/>(iam.tf)"]
+            NROLE["Node role<br/>(iam.tf)"]
+            ALBROLE["ALB controller role, IRSA<br/>(alb-controller-iam.tf)"]
+            CAROLE["Cluster Autoscaler role, IRSA<br/>(cluster-autoscaler-iam.tf)"]
+        end
+
+        subgraph VPC["VPC 10.0.0.0/16 (vpc.tf)"]
+            IGW["Internet gateway"]
+
+            subgraph PUB["Public subnets, 2 AZs"]
+                NAT["NAT gateway"]
+                ALB["Application Load Balancer<br/>(built from an Ingress)"]
+            end
+
+            subgraph PRIV["Private subnets, 2 AZs"]
+                NODES["Worker nodes<br/>(scale 1 to 3)"]
+                ALBCTL["ALB controller pod"]
+                CACTL["Cluster Autoscaler pod"]
+                PODS["App pods"]
+            end
+        end
+    end
+
+    Internet --> IGW
+    IGW --> ALB
+    ALB --> PODS
+    NODES --> NAT
+    NAT --> IGW
+
+    CP -. manages .-> NODES
+    CROLE -. assumed by .-> CP
+    NROLE -. assumed by .-> NODES
+
+    OIDC -. trusts .-> ALBROLE
+    OIDC -. trusts .-> CAROLE
+    ALBROLE -. assumed by .-> ALBCTL
+    CAROLE -. assumed by .-> CACTL
+
+    ALBCTL -. creates .-> ALB
+    PODS -. pending pods trigger .-> CACTL
+    CACTL -. sets desired capacity .-> ASG
+    ASG -. launches .-> NODES
+```
+
+The network comes first. The VPC holds two public and two private subnets
+across two availability zones. Public subnets reach the internet through the
+internet gateway. Private subnets reach the internet outbound through the NAT
+gateway, but nothing from outside can reach them directly. Worker nodes run in
+the private subnets, so they are not exposed.
+
+Once the cluster exists, it has an OIDC issuer, which is what makes IRSA work.
+The ALB controller role and the Cluster Autoscaler role each trust that OIDC
+provider, scoped to one service account. When a controller pod runs (installed
+later by Helm), it assumes its role and gets temporary AWS credentials, no
+stored keys. A load balancer only appears when an Ingress is created; the ALB
+controller watches for Ingress objects and builds one to match. The Cluster
+Autoscaler works the same IRSA way: when pods cannot be scheduled for lack of
+capacity, it calls the AWS Auto Scaling API to raise the node group's desired
+count.
+
+### What each file does
+
+| File | What it does |
+|------|--------------|
+| `versions.tf` | Pins the Terraform version and the AWS and TLS providers. |
+| `providers.tf` | Configures the AWS provider with the region. Uses the AWS CLI credentials already on the machine. |
+| `variables.tf` | Inputs with defaults: region, cluster name, Kubernetes version, VPC CIDR, and the list of AZs. |
+| `vpc.tf` | The network: VPC, two public and two private subnets, internet gateway, NAT gateway, route tables, and the subnet tags EKS and the ALB controller rely on. |
+| `iam.tf` | The cluster role (trusted by the eks service) and the node role (trusted by ec2), with their managed policies. |
+| `eks.tf` | The EKS control plane and the managed node group of t3.medium instances. |
+| `oidc.tf` | The IAM OIDC provider for the cluster, the trust anchor for IRSA. |
+| `alb-controller-iam.tf` | IAM policy and IRSA role for the AWS Load Balancer Controller. |
+| `cluster-autoscaler-iam.tf` | IAM policy and IRSA role for the Cluster Autoscaler. |
+| `outputs.tf` | Values printed after apply: cluster name/endpoint, the kubectl setup command, the OIDC provider ARN, and both controller role ARNs. |
+
+### Usage
+
+```bash
+cd infra/terraform
+terraform init      # download providers
+terraform plan       # preview
+terraform apply       # create everything, ~12-15 min, mostly the control plane
+```
+
+Connect kubectl using the command Terraform prints, then confirm the nodes
+joined:
+
+```bash
+aws eks update-kubeconfig --name polyshop-eks --region us-west-2
+kubectl get nodes
+```
+
+State is stored locally (`infra/terraform/terraform.tfstate`, gitignored).
+Moving it to an S3 backend with DynamoDB locking is the next step for shared
+or team use.
+
+**Cost:** the control plane, the two t3.medium nodes, and the NAT gateway all
+bill by the hour, and an ALB adds more once an Ingress exists. Tear down when
+done (see Teardown below).
+
 ## What you need before deploying
 
 - The Terraform infra already applied (cluster `polyshop-eks`, region `us-west-2`).
@@ -188,6 +307,86 @@ kubectl get storageclass       # gp3 should show (default)
 `WaitForFirstConsumer` delays volume creation until the pod is scheduled, so the
 EBS volume lands in the same availability zone as the pod. Without it you can get
 a volume in one AZ and a pod in another, and the volume never attaches.
+
+## Smoke-test the controllers before deploying the app
+
+Worth doing once, so a silent auth failure doesn't waste time debugging the real
+app later. `infra/smoke-test/` has a throwaway nginx Deployment + ALB Ingress
+for exactly this.
+
+Cluster facts this assumes: `polyshop-eks`, region `us-west-2`, Kubernetes 1.33,
+one managed node group of `t3.medium` (min 1, desired 2, max 3).
+
+**Verify IRSA first.** Prove the autoscaler can actually reach AWS:
+
+```bash
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler
+kubectl logs -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler --tail=20
+```
+
+Pod should be `1/1 Running`. In the logs, look for it discovering the ASG (a
+line like `Found ... availability zones for ASG "eks-polyshop-eks-nodes-..."`)
+and confirm there's no `AccessDenied`. Discovering the ASG means IRSA works.
+
+**Deploy nginx behind the ALB:**
+
+```bash
+kubectl apply -f infra/smoke-test/nginx.yaml
+kubectl apply -f infra/smoke-test/ingress.yaml
+kubectl get ingress nginx -w
+```
+
+ADDRESS is empty at first, then fills with a `k8s-default-nginx-...elb.amazonaws.com`
+name in a few seconds; the ALB needs another minute or two to pass health checks.
+Then `curl http://<ADDRESS>` should return the nginx welcome page, proving
+Internet → ALB → pod.
+
+**Force a scale-up.** Each nginx pod requests 500m CPU; a `t3.medium` gives about
+1.9 usable CPU, so scaling to 8 replicas (4 CPU) overflows the current nodes:
+
+```bash
+kubectl scale deployment nginx --replicas=8
+kubectl get pods                      # some Running, some Pending
+kubectl get nodes -w                  # a new node appears NotReady then Ready
+kubectl logs -n kube-system -l app.kubernetes.io/name=aws-cluster-autoscaler --tail=30 \
+  | grep -E "unschedulable|scale-up|setting group size"
+```
+
+Look for `Scale-up: setting group ... size to 3` in the log.
+
+**Scale back down** (`kubectl scale deployment nginx --replicas=2`) and expect
+pods to drop immediately but nodes to lag behind — deliberately, to avoid
+thrashing:
+
+- ~10 minute cooldown after any scale-up before scale-down starts
+  (`scaleDownInCooldown=true` in the log)
+- a node is only removed after being continuously unneeded for ~10 minutes,
+  and only if every pod on it can move elsewhere
+- a node hosting a kube-system pod with no PodDisruptionBudget (e.g. the ALB
+  controller or coredns) is refused as unremovable even when nearly idle
+- nodes are removed one at a time; the unneeded timer resets after each removal
+- the node group min is 1, so it never scales below one node
+
+Removal shows as a `ToBeDeletedByClusterAutoscaler` taint, then `deleting pod
+for node scale down` (the drain), then the instance terminates.
+
+**Tear down the smoke test** before moving on (leaving it running just burns
+cost for nothing):
+
+```bash
+kubectl delete -f infra/smoke-test/ingress.yaml
+kubectl get ingress                   # expect none
+aws elbv2 describe-load-balancers --region us-west-2 \
+  --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-default-nginx')].LoadBalancerName"
+# wait until that returns nothing, then:
+kubectl delete -f infra/smoke-test/nginx.yaml
+```
+
+**Gotchas:** the two Helm values files' `serviceAccount.name` must exactly match
+each IAM role's trust policy (`system:serviceaccount:kube-system:<name>`) — a
+mismatch makes AWS refuse the role, the pod keeps running, and scaling fails
+silently with no crash. Pin the autoscaler's `image.tag` to a published version
+matching the cluster's Kubernetes minor version, or it sits in `ImagePullBackOff`.
 
 ## Deploy the app
 
