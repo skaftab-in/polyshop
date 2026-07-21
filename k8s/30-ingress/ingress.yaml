@@ -1,28 +1,28 @@
-apiVersion: networking.k8s.io/v1   # Ingress lives in this group, not core v1
+apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: polyshop
   namespace: polyshop
   annotations:
-    # nginx rewrites the path so /api/products reaches gateway as /api/products.
-    # Left here as the common place controller-specific tuning goes.
-    nginx.ingress.kubernetes.io/use-regex: "true"
+    alb.ingress.kubernetes.io/scheme: internet-facing        # public ALB, uses your public-subnet tags
+    alb.ingress.kubernetes.io/target-type: ip                # route to pod IPs (VPC CNI), Services stay ClusterIP
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]' # HTTP only for now, add 443 with TLS later
 spec:
-  ingressClassName: nginx     # which controller handles this. Matches the class installed
+  ingressClassName: alb
   rules:
-    - http:                   # no host: means match any hostname (fine for local)
+    - http:
         paths:
-          - path: /api        # requests starting /api
+          - path: /api           # API traffic to gateway
             pathType: Prefix
             backend:
               service:
-                name: gateway     # go to the gateway Service
+                name: gateway
                 port:
                   number: 3000
-          - path: /           # everything else
+          - path: /              # everything else to frontend
             pathType: Prefix
             backend:
               service:
-                name: frontend    # go to the frontend Service
+                name: frontend
                 port:
                   number: 80
