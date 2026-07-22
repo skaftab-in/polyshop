@@ -6,7 +6,7 @@ clusterName: polyshop-eks      # which cluster this controller manages
 
 region: us-west-2              # which AWS region the cluster lives in
 
-vpcId: vpc-015ad8c2e54056bde          # the network to build load balancers in (ALB-only need; get from `terraform output`)
+vpcId: vpc-02f3428c27b0a83d0          # the network to build load balancers in (ALB-only need; get from `terraform output`)
 
 serviceAccount:
   create: true                 # let Helm create the service account (the pod's identity)

@@ -35,3 +35,11 @@ output "cluster_autoscaler_role_arn" {
   description = "IAM role ARN for the cluster autoscaler service account (used by Helm)"
   value       = aws_iam_role.cluster_autoscaler.arn
 }
+output "ebs_csi_role_arn" {
+  description = "IAM role ARN for the EBS CSI driver (informational; the addon already has it wired)"
+  value       = aws_iam_role.ebs_csi.arn
+}
+output "vpc_id" {
+  description = "VPC ID needed by alb-values.yaml's vpcId field"
+  value       = aws_vpc.main.id
+}

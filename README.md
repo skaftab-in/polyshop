@@ -285,28 +285,14 @@ kubectl get pods -n kube-system | grep ebs-csi-controller     # want 6/6 Running
 
 The driver still needs a StorageClass telling PVCs how to provision. EKS ships a
 `gp2` class, but it is not marked default and it uses the old in-tree provisioner,
-not the CSI driver. Create a gp3 class backed by the CSI driver and mark it default:
+not the CSI driver. `k8s/05-storage-class/gp3-default.yaml` creates a gp3 class
+backed by the CSI driver and marks it default (comments in that file explain each
+field):
 
 ```bash
-kubectl apply -f - <<'EOF'
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: gp3
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: ebs.csi.aws.com
-volumeBindingMode: WaitForFirstConsumer
-parameters:
-  type: gp3
-EOF
-
+kubectl apply -f k8s/05-storage-class/
 kubectl get storageclass       # gp3 should show (default)
 ```
-
-`WaitForFirstConsumer` delays volume creation until the pod is scheduled, so the
-EBS volume lands in the same availability zone as the pod. Without it you can get
-a volume in one AZ and a pod in another, and the volume never attaches.
 
 ## Smoke-test the controllers before deploying the app
 
@@ -403,6 +389,7 @@ Apply in phase order:
 
 ```bash
 kubectl apply -f k8s/00-namespace/namespace.yaml
+kubectl apply -f k8s/05-storage-class/   # default gp3 class, must exist before the PVCs below ask for it
 kubectl apply -f k8s/10-datastores/
 kubectl get pods -n polyshop             # wait for postgres-0 and redis-0 to be 1/1
 kubectl get pvc -n polyshop              # both should be Bound

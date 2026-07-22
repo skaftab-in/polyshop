@@ -1,0 +1,10 @@
+apiVersion: storage.k8s.io/v1        # API group/version this object type belongs to
+kind: StorageClass                    # this object is a StorageClass
+metadata:
+  name: gp3                           # the class's name — PVCs reference this via storageClassName: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"   # makes this THE default; any PVC that doesn't name a class uses this one automatically
+provisioner: ebs.csi.aws.com           # WHO creates the volume — must exactly match a driver name from `kubectl get csidrivers` (this is the EBS CSI driver)
+volumeBindingMode: WaitForFirstConsumer   # don't create the volume yet — wait until a pod is scheduled, so the volume lands in the same AZ as the pod
+parameters:
+  type: gp3                           # the actual EBS disk type to create — current-gen SSD, cheaper/faster than the older gp2
