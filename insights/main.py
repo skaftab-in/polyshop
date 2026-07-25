@@ -45,3 +45,4 @@ def trending(limit: int = 4):
             {"productId": int(pid), "views": int(score)} for pid, score in top
         ]
     }
+# ci trigger
