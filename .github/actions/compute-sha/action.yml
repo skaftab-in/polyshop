@@ -1,0 +1,18 @@
+# Tiny action, but extracted anyway - it's called by every ci-<service>.yml
+# workflow. Extracted means "if we ever change how the SHA is computed
+# (e.g. full SHA instead of short), we change it in exactly one place."
+
+name: "Compute short git SHA"
+description: "Emits the current commit's short SHA as an output named 'sha'."
+
+outputs:
+  sha:
+    description: "Short SHA of the current commit"
+    value: ${{ steps.sha.outputs.short }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: sha
+      shell: bash
+      run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"

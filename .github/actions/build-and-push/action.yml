@@ -1,0 +1,28 @@
+# Builds a Docker image and pushes it. Assumes docker-setup has already run
+# (Buildx enabled + Hub logged in) - a workflow that skips that step
+# would fail here with an auth error.
+
+name: "Build and push a Docker image"
+description: "Builds an image from the given context and pushes it to Docker Hub with the given tag."
+
+inputs:
+  context:
+    description: "Docker build context path (e.g. ./catalog)"
+    required: true
+  image:
+    description: "Full image name including repo (e.g. skaftab/polyshop-catalog)"
+    required: true
+  tag:
+    description: "Tag to push under (e.g. the short git SHA)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        push: true
+        tags: ${{ inputs.image }}:${{ inputs.tag }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max

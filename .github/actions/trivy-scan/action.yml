@@ -1,0 +1,21 @@
+# Scans a pushed image for known CVEs. Runs AFTER push, not before, because
+# Trivy needs a real pulled image to scan. If the scan fails (exit-code: 1
+# on any CRITICAL/HIGH finding), the pushed tag stays in Docker Hub but the
+# calling workflow never continues to update-manifest, so it's never deployed.
+
+name: "Scan a Docker image with Trivy"
+description: "Fails the job if the image has any CRITICAL or HIGH severity CVEs."
+
+inputs:
+  image-ref:
+    description: "Full image reference to scan (e.g. skaftab/polyshop-catalog:abc1234)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - uses: aquasecurity/trivy-action@v0.36.0
+      with:
+        image-ref: ${{ inputs.image-ref }}
+        severity: CRITICAL,HIGH
+        exit-code: "1"

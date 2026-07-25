@@ -1,0 +1,59 @@
+name: CI - insights
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "insights/**"
+
+permissions:
+  contents: write
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-scan:
+    needs: gitleaks
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: sha
+        uses: ./.github/actions/compute-sha
+      - uses: ./.github/actions/lint-dockerfile
+        with:
+          dockerfile: insights/Dockerfile
+      - uses: ./.github/actions/docker-setup
+        with:
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: ./.github/actions/build-and-push
+        with:
+          context: ./insights
+          image: skaftab/polyshop-insights
+          tag: ${{ steps.sha.outputs.sha }}
+      - uses: ./.github/actions/trivy-scan
+        with:
+          image-ref: skaftab/polyshop-insights:${{ steps.sha.outputs.sha }}
+
+  update-manifest:
+    needs: build-and-scan
+    runs-on: ubuntu-latest
+    concurrency:
+      group: manifest-updates
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/bump-manifest
+        with:
+          service: insights
+          sha: ${{ needs.build-and-scan.outputs.sha }}

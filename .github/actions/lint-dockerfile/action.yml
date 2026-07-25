@@ -1,0 +1,17 @@
+# The Hadolint step, extracted so any workflow can lint a Dockerfile with
+# one uses:.
+
+name: "Lint a Dockerfile"
+description: "Runs Hadolint against the given Dockerfile."
+
+inputs:
+  dockerfile:
+    description: "Path to the Dockerfile to lint (e.g. catalog/Dockerfile)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - uses: hadolint/hadolint-action@v3.1.0
+      with:
+        dockerfile: ${{ inputs.dockerfile }}

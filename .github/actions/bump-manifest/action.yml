@@ -1,0 +1,37 @@
+# Bumps the image tag in a service's Deployment manifest and pushes the
+# commit back to main. Called by every ci-<service>.yml's update-manifest
+# job so the git plumbing (sed + git config + commit + push) lives in
+# one place instead of four.
+#
+# The caller must have already checked out the repo (via actions/checkout)
+# before calling this action - the composite action's file itself has to
+# be readable from the working tree, and sed needs a real file to edit.
+#
+# NOTE: the concurrency block that queues these calls (so two of them
+# don't race to push at the same time) CANNOT live here - concurrency
+# is a job-level GitHub Actions feature, not something a composite action
+# can declare. Each calling workflow still sets it on the job level.
+
+name: "Bump image tag in a Deployment manifest and push"
+description: "Edits k8s/20-app/<service>-deployment.yaml to point at a new image tag, commits, and pushes."
+
+inputs:
+  service:
+    description: "Service name (catalog, gateway, frontend, insights) - picks which manifest to edit"
+    required: true
+  sha:
+    description: "The new image tag (typically the short git SHA)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Bump image tag and push
+      shell: bash
+      run: |
+        sed -i "s|image: skaftab/polyshop-${{ inputs.service }}:.*|image: skaftab/polyshop-${{ inputs.service }}:${{ inputs.sha }}|" k8s/20-app/${{ inputs.service }}-deployment.yaml
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add k8s/20-app/${{ inputs.service }}-deployment.yaml
+        git diff --cached --quiet || git commit -m "ci: bump ${{ inputs.service }} to ${{ inputs.sha }}"
+        git push
