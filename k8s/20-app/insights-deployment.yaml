@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: insights
-          image: skaftab/polyshop-insights:0.1.0
+          image: skaftab/polyshop-insights:86061f4
           ports:
             - containerPort: 8000     # FastAPI listens here
           env:
