@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: gateway
-          image: skaftab/polyshop-gateway:0.2.0
+          image: skaftab/polyshop-gateway:b223a06
           ports:
             - containerPort: 3000     # Express listens here
           env:
